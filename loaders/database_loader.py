@@ -130,8 +130,9 @@ class DatabaseLoader:
             ORDER BY w.data_fetched_at DESC
             LIMIT :limit
         """)
-        with self.db.get_connection() as conn:
-            return pd.read_sql(query, conn, params={'limit': limit})
+        with self.db.engine.connect() as conn:
+            result = conn.execute(query, {'limit': int(limit)})
+            return pd.DataFrame(result.fetchall(), columns=result.keys())
 
     def get_city_stats(self):
         with self.db.get_connection() as conn:
