@@ -1,263 +1,201 @@
-"""
-Main ETL Pipeline Orchestrator
-
-This script orchestrates the complete ETL workflow:
-E - Extract data from OpenWeatherMap API
-T - Transform raw JSON into clean DataFrames
-L - Load data into PostgreSQL database
-
-Key Data Engineering Concepts:
-- Pipeline orchestration
-- Error handling and logging
-- Scheduling (can be extended with cron/Airflow)
-- Monitoring and observability
-"""
-
+import logging
 import sys
 from datetime import datetime
+
 from config.database import DatabaseConfig
 from extractors.weather_api import WeatherAPIExtractor
 from transformers.weather_transform import WeatherTransformer
 from loaders.database_loader import DatabaseLoader
+from loaders.s3_loader import S3Loader
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger(__name__)
 
 
 class WeatherETLPipeline:
-    """
-    Orchestrates the complete weather data ETL pipeline.
-    
-    Design Pattern: This follows the "Controller" pattern
-    - Coordinates between different components
-    - Handles errors at pipeline level
-    - Provides monitoring and logging
-    """
-    
+    """Orchestrates the Extract → S3 archive → Transform → Load → Validate pipeline."""
+
     def __init__(self):
-        """Initialize ETL components"""
-        print("\n" + "=" * 70)
-        print("🌤️  WEATHER DATA ETL PIPELINE")
-        print("=" * 70)
-        
+        logger.info("Initializing Weather ETL Pipeline")
         try:
-            # Initialize components
             self.db_config = DatabaseConfig()
             self.extractor = WeatherAPIExtractor()
             self.transformer = WeatherTransformer()
             self.loader = DatabaseLoader(self.db_config)
-            
-            print("✅ All components initialized successfully")
-        
+            self.s3_loader = S3Loader()
+            logger.info("All components initialized")
         except Exception as e:
-            print(f"❌ Failed to initialize pipeline: {e}")
+            logger.error("Initialization failed: %s", e)
             sys.exit(1)
-    
+
     def run_pipeline(self, export_csv=False):
         """
-        Execute the complete ETL pipeline.
-        
-        Args:
-            export_csv (bool): Whether to export transformed data to CSV
-        
+        Run the full ETL pipeline.
+
         Returns:
-            dict: Pipeline execution statistics
-        
-        Pipeline Flow:
-        1. Extract → API calls
-        2. Transform → Data cleaning
-        3. Load → Database insertion
-        4. Validate → Quality checks
+            dict: Execution stats (success, counts, s3_key, duration).
         """
-        start_time = datetime.now()
-        print(f"\n🚀 Pipeline started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
+        start_time = datetime.utcnow()
+        logger.info("Pipeline run started — %s UTC", start_time.strftime('%Y-%m-%d %H:%M:%S'))
+
         stats = {
             'start_time': start_time,
             'extracted': 0,
             'transformed': 0,
             'loaded': 0,
+            's3_key': None,
             'errors': [],
-            'success': False
+            'success': False,
         }
-        
+
         try:
-            # ========================================
-            # PHASE 1: EXTRACT
-            # ========================================
-            print("\n" + "-" * 70)
-            print("PHASE 1: EXTRACT")
-            print("-" * 70)
-            
+            # ── PHASE 1: EXTRACT ──────────────────────────────────────────
+            logger.info("Phase 1: Extract")
             raw_data = self.extractor.extract_from_config()
             stats['extracted'] = len(raw_data)
-            
             if not raw_data:
-                raise Exception("No data extracted. Check API key and city configuration.")
-            
-            print(f"✅ Extracted {len(raw_data)} records from API")
-            
-            # ========================================
-            # PHASE 2: TRANSFORM
-            # ========================================
-            print("\n" + "-" * 70)
-            print("PHASE 2: TRANSFORM")
-            print("-" * 70)
-            
+                raise RuntimeError("No data extracted — check API key and CITIES config.")
+            logger.info("Extracted %d records", len(raw_data))
+
+            # ── PHASE 1b: ARCHIVE RAW DATA TO S3 ─────────────────────────
+            logger.info("Archiving raw data to S3")
+            stats['s3_key'] = self.s3_loader.upload_raw_data(raw_data, start_time)
+
+            # ── PHASE 2: TRANSFORM ────────────────────────────────────────
+            logger.info("Phase 2: Transform")
             transformed_df = self.transformer.transform_batch(raw_data)
             stats['transformed'] = len(transformed_df)
-            
             if transformed_df.empty:
-                raise Exception("Transformation resulted in empty dataset.")
-            
-            # Optional: Export to CSV for inspection
+                raise RuntimeError("Transformation returned empty dataset.")
             if export_csv:
                 self.transformer.export_to_csv(
                     transformed_df,
-                    f"weather_data_{start_time.strftime('%Y%m%d_%H%M%S')}.csv"
+                    f"weather_data_{start_time.strftime('%Y%m%d_%H%M%S')}.csv",
                 )
-            
-            print(f"✅ Transformed {len(transformed_df)} records")
-            
-            # ========================================
-            # PHASE 3: LOAD
-            # ========================================
-            print("\n" + "-" * 70)
-            print("PHASE 3: LOAD")
-            print("-" * 70)
-            
+            logger.info("Transformed %d records", len(transformed_df))
+
+            # ── PHASE 3: LOAD ─────────────────────────────────────────────
+            logger.info("Phase 3: Load")
             cities_loaded, records_loaded = self.loader.load_complete_batch(transformed_df)
             stats['loaded'] = records_loaded
-            
-            print(f"✅ Loaded {cities_loaded} cities and {records_loaded} weather records")
-            
-            # ========================================
-            # PHASE 4: VALIDATE
-            # ========================================
-            print("\n" + "-" * 70)
-            print("PHASE 4: VALIDATE")
-            print("-" * 70)
-            
-            # Verify data was loaded correctly
-            latest_records = self.loader.get_latest_records(limit=5)
-            print(f"📊 Latest {len(latest_records)} records in database:")
-            print(latest_records.to_string(index=False))
-            
-            # Get overall statistics
+            logger.info("Loaded %d cities, %d weather records", cities_loaded, records_loaded)
+
+            # ── PHASE 4: VALIDATE ─────────────────────────────────────────
+            logger.info("Phase 4: Validate")
+            latest = self.loader.get_latest_records(limit=5)
+            logger.info("Latest records:\n%s", latest.to_string(index=False))
             db_stats = self.loader.get_city_stats()
-            print(f"\n📈 Database Statistics:")
-            print(f"  Total cities tracked: {db_stats['cities']}")
-            print(f"  Total weather records: {db_stats['weather_records']}")
-            print(f"  Data spans: {db_stats['earliest_record']} to {db_stats['latest_record']}")
-            
+            logger.info(
+                "DB totals — cities: %d, records: %d, range: %s → %s",
+                db_stats['cities'],
+                db_stats['weather_records'],
+                db_stats['earliest_record'],
+                db_stats['latest_record'],
+            )
+
             stats['success'] = True
-        
+
         except Exception as e:
-            error_msg = f"Pipeline failed: {str(e)}"
-            print(f"\n❌ {error_msg}")
-            stats['errors'].append(error_msg)
-            stats['success'] = False
-        
+            logger.error("Pipeline error: %s", e)
+            stats['errors'].append(str(e))
+
         finally:
-            # Calculate execution time
-            end_time = datetime.now()
-            duration = (end_time - start_time).total_seconds()
+            end_time = datetime.utcnow()
             stats['end_time'] = end_time
-            stats['duration_seconds'] = duration
-            
-            # Print summary
-            self._print_summary(stats)
-        
+            stats['duration_seconds'] = (end_time - start_time).total_seconds()
+            self._log_summary(stats)
+
         return stats
-    
-    def _print_summary(self, stats):
-        """Print pipeline execution summary"""
-        print("\n" + "=" * 70)
-        print("📊 PIPELINE EXECUTION SUMMARY")
-        print("=" * 70)
-        
-        print(f"Start time:    {stats['start_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"End time:      {stats['end_time'].strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Duration:      {stats['duration_seconds']:.2f} seconds")
-        print(f"\nRecords:")
-        print(f"  Extracted:   {stats['extracted']}")
-        print(f"  Transformed: {stats['transformed']}")
-        print(f"  Loaded:      {stats['loaded']}")
-        
-        if stats['success']:
-            print(f"\n✅ Pipeline completed successfully!")
-        else:
-            print(f"\n❌ Pipeline failed!")
-            for error in stats['errors']:
-                print(f"  - {error}")
-        
-        print("=" * 70 + "\n")
-    
+
+    def _log_summary(self, stats):
+        status = "SUCCESS" if stats['success'] else "FAILED"
+        logger.info(
+            "Run %s | %.2fs | extracted=%d transformed=%d loaded=%d s3=%s",
+            status,
+            stats['duration_seconds'],
+            stats['extracted'],
+            stats['transformed'],
+            stats['loaded'],
+            stats.get('s3_key', 'none'),
+        )
+        if not stats['success']:
+            for err in stats['errors']:
+                logger.error("  %s", err)
+
     def setup_database(self):
-        """
-        Initialize database schema.
-        Run this once before first pipeline execution.
-        """
-        print("\n🔧 Setting up database schema...")
-        
+        """Create the DB and schema. Run once before the first pipeline execution."""
+        logger.info("Setting up database")
         try:
+            # Step 1: create the database itself (connect to default 'postgres' db)
+            self._create_database_if_not_exists()
+
+            # Step 2: create tables inside weather_db
             self.db_config.execute_sql_file('sql/create_tables.sql')
-            print("✅ Database schema created successfully")
-            
-            # Verify tables were created
             with self.db_config.get_connection() as conn:
                 from sqlalchemy import text
-                tables = conn.execute(text("""
-                    SELECT table_name 
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public'
-                """)).fetchall()
-                
-                print(f"\n📋 Created tables:")
-                for table in tables:
-                    print(f"  - {table[0]}")
-        
+                tables = conn.execute(text(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+                )).fetchall()
+            logger.info("Schema ready — tables: %s", [t[0] for t in tables])
         except Exception as e:
-            print(f"❌ Database setup failed: {e}")
+            logger.error("Schema setup failed: %s", e)
             raise
+
+    def _create_database_if_not_exists(self):
+        """Connect to the default 'postgres' DB and create weather_db if missing."""
+        from sqlalchemy import create_engine, text
+        from urllib.parse import quote_plus
+
+        cfg = self.db_config
+        encoded_user = quote_plus(cfg.user)
+        encoded_password = quote_plus(cfg.password)
+        admin_url = (
+            f"postgresql://{encoded_user}:{encoded_password}@"
+            f"{cfg.host}:{cfg.port}/postgres"
+        )
+        engine = create_engine(
+            admin_url,
+            isolation_level="AUTOCOMMIT",
+            connect_args={"sslmode": "require"},
+        )
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :db"),
+                {"db": cfg.database},
+            ).fetchone()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{cfg.database}"'))
+                logger.info("Created database: %s", cfg.database)
+            else:
+                logger.info("Database already exists: %s", cfg.database)
+        engine.dispose()
 
 
 def main():
     """
-    Main entry point for the ETL pipeline.
-    
-    Usage:
-        python main.py              # Run pipeline once
-        python main.py --setup      # Setup database schema
-        python main.py --export     # Run pipeline and export CSV
+    Entry points:
+        python main.py           # run pipeline once
+        python main.py --setup   # create DB schema (run once)
+        python main.py --export  # run pipeline + export CSV
     """
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Weather ETL Pipeline')
-    parser.add_argument(
-        '--setup',
-        action='store_true',
-        help='Setup database schema (run once before first execution)'
-    )
-    parser.add_argument(
-        '--export',
-        action='store_true',
-        help='Export transformed data to CSV'
-    )
-    
+    parser.add_argument('--setup', action='store_true', help='Create DB schema')
+    parser.add_argument('--export', action='store_true', help='Export CSV after transform')
     args = parser.parse_args()
-    
-    # Create pipeline instance
+
     pipeline = WeatherETLPipeline()
-    
-    # Setup database if requested
+
     if args.setup:
         pipeline.setup_database()
         return
-    
-    # Run pipeline
+
     stats = pipeline.run_pipeline(export_csv=args.export)
-    
-    # Exit with appropriate code
-    # 0 = success, 1 = failure
-    # This is important for scheduling systems (cron, Airflow)
     sys.exit(0 if stats['success'] else 1)
 
 

@@ -1,4 +1,4 @@
-# Environment variables (contains secrets!)
+# Secrets — never commit
 .env
 
 # Python
@@ -11,16 +11,28 @@ venv/
 env/
 *.egg-info/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Data exports
+*.csv
 
-# Database
+# Lambda deployment artifacts
+deploy/lambda_package/
+deploy/weather_etl_lambda.zip
+
+# Airflow runtime
+airflow/
 *.db
 *.sqlite3
 
 # Logs
 *.log
 logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

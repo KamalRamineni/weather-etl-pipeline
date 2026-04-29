@@ -1,0 +1,86 @@
+version: '3.8'
+
+# Minimal single-container Airflow setup for local development.
+# Uses the official apache/airflow image with SequentialExecutor (no extra workers needed).
+#
+# Usage:
+#   docker compose up -d
+#   open http://localhost:8080  (login: admin / admin)
+#   docker compose down
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.4
+  environment:
+    AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+    AIRFLOW__WEBSERVER__SECRET_KEY: weather-etl-local-dev
+    # Pipeline environment variables (same as .env)
+    OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
+    DB_HOST: ${DB_HOST}
+    DB_PORT: ${DB_PORT:-5432}
+    DB_NAME: ${DB_NAME:-weather_db}
+    DB_USER: ${DB_USER:-postgres}
+    DB_PASSWORD: ${DB_PASSWORD}
+    S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+    CITIES: ${CITIES:-New York,London,Tokyo,Mumbai,Hyderabad}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-2}
+    PYTHONIOENCODING: utf-8
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./config:/opt/airflow/config
+    - ./extractors:/opt/airflow/extractors
+    - ./transformers:/opt/airflow/transformers
+    - ./loaders:/opt/airflow/loaders
+    - ./sql:/opt/airflow/sql
+    - ./main.py:/opt/airflow/main.py
+    - airflow-db:/opt/airflow
+  user: "50000:0"
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    container_name: weather-etl-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install --quiet sqlalchemy psycopg2-binary boto3 requests python-dotenv 2>/dev/null
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname Weather --lastname ETL \
+          --role Admin --email admin@weather-etl.local || true
+        echo "Airflow initialised"
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: weather-etl-airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: weather-etl-airflow-scheduler
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  airflow-db:
