@@ -1,6 +1,0 @@
-city_name,country_code,latitude,longitude,recorded_at,temperature,feels_like,temp_min,temp_max,pressure,humidity,weather_main,weather_description,wind_speed,wind_deg,cloudiness,visibility,rain_1h,snow_1h,transformed_at
-New York,US,40.7143,-74.006,2026-04-23 00:50:11,10.83,10.11,10.83,10.83,1015,82,Clouds,scattered clouds,1.24,29,27,10000,0.0,0.0,2026-04-23 01:01:36.015377
-London,GB,51.5085,-0.1257,2026-04-23 00:55:16,6.17,3.83,6.17,6.17,1029,90,Clear,clear sky,3.12,61,5,10000,0.0,0.0,2026-04-23 01:01:36.015377
-Tokyo,JP,35.6895,139.6917,2026-04-23 00:56:42,16.0,15.43,16.0,16.0,1009,68,Rain,heavy intensity rain,2.04,351,100,10000,5.62,0.0,2026-04-23 01:01:36.015377
-Mumbai,IN,19.0144,72.8479,2026-04-23 01:00:05,30.7,32.91,30.7,30.7,1009,54,Clear,clear sky,4.63,326,1,10000,0.0,0.0,2026-04-23 01:01:36.015377
-Sydney,AU,-33.8679,151.2073,2026-04-23 01:00:03,21.43,21.06,21.43,21.43,1028,55,Clouds,overcast clouds,4.36,156,100,10000,0.0,0.0,2026-04-23 01:01:36.015377
